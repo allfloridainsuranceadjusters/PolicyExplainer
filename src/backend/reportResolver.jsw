@@ -1,0 +1,81 @@
+// backend/reportResolver.jsw
+import wixData from "wix-data";
+import { generateAndUploadReportPdf } from "backend/policyPdfGenerator.js";
+
+const COLLECTION = "PolicyExplainerRuns";
+
+// Try these in order; add yours if different
+const AI_FIELDS = ["aiExplanation", "aiOutput", "policyExplanation", "aiText", "explanation"];
+
+export async function fetchOrBuildReportUrl(submissionId) {
+  try {
+    if (!submissionId) return { ok: false, error: "Missing submissionId" };
+
+    const q = await wixData
+      .query(COLLECTION)
+      .eq("submissionId", submissionId)
+      .limit(1)
+      .find({ suppressAuth: true });
+
+    const item = q.items?.[0];
+    if (!item) return { ok: false, error: "No record found for this submissionId yet." };
+
+    // If reportUrl exists, return it
+    if (item.reportUrl && String(item.reportUrl).trim()) {
+      return { ok: true, reportUrl: item.reportUrl, mode: "existing" };
+    }
+
+    // Find which AI field has content
+    let aiFieldUsed = "";
+    let aiText = "";
+
+    for (const f of AI_FIELDS) {
+      if (item[f] && String(item[f]).trim()) {
+        aiFieldUsed = f;
+        aiText = String(item[f]).trim();
+        break;
+      }
+    }
+
+    console.log("[REPORT RESOLVER] AI field used:", aiFieldUsed || "(none)");
+
+    if (!aiText) {
+      return {
+        ok: false,
+        error: "Report not ready yet (AI text not complete). Try again in 30 seconds.",
+        status: item.status || "",
+        step: item.step || "",
+      };
+    }
+
+    // Generate PDF now and write reportUrl back
+    const pdf = await generateAndUploadReportPdf({
+      aiExplanation: aiText,                // generator expects aiExplanation as an INPUT PARAM (not a CMS field)
+      firstName: item.firstName || "",
+      submissionId,
+      runId: item.runId || item._id,
+    });
+
+    if (!pdf?.ok || !pdf.reportUrl) {
+      const msg = pdf?.error || "PDF generator returned ok:false or missing reportUrl";
+      await writePatch(item._id, { status: "ERROR", step: "PDF_FAILED", errorMessage: msg });
+      return { ok: false, error: msg };
+    }
+
+    const updated = await writePatch(item._id, {
+      reportUrl: pdf.reportUrl,
+      status: "PDF_READY",
+      step: "READY_FOR_EMAIL",
+      errorMessage: "",
+    });
+
+    return { ok: true, reportUrl: updated.reportUrl, mode: "generated_now", aiFieldUsed };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+}
+
+async function writePatch(_id, patch) {
+  const current = await wixData.get(COLLECTION, _id, { suppressAuth: true });
+  return wixData.update(COLLECTION, { ...current, ...patch }, { suppressAuth: true });
+}

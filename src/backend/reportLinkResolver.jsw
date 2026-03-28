@@ -1,0 +1,24 @@
+// backend/reportLinkResolver.jsw
+import { mediaManager } from "wix-media-backend";
+
+/**
+ * Turns a wix:document://... URL into a public HTTP URL.
+ */
+export async function toPublicUrl(wixDocUrl) {
+  try {
+    if (!wixDocUrl || typeof wixDocUrl !== "string") {
+      return { ok: false, error: "Missing wixDocUrl" };
+    }
+
+    // mediaManager.getDownloadUrl works for wix:document links
+    const downloadUrl = await mediaManager.getDownloadUrl(wixDocUrl);
+
+    if (!downloadUrl || typeof downloadUrl !== "string") {
+      return { ok: false, error: "Could not generate public download url" };
+    }
+
+    return { ok: true, downloadUrl };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+}

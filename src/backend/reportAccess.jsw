@@ -1,0 +1,52 @@
+// backend/reportAccess.jsw
+import wixData from "wix-data";
+import { mediaManager } from "wix-media-backend";
+
+const COLLECTION_ID = "PolicyExplainerRuns";
+
+async function toPublicDownloadUrl(fileUrl, fileName = "") {
+  if (!fileUrl || typeof fileUrl !== "string") return "";
+  const v = fileUrl.trim();
+
+  if (v.startsWith("https://") || v.startsWith("http://")) return v;
+
+  if (v.startsWith("wix:")) {
+    const dl = await mediaManager.getDownloadUrl(v, null, fileName || null, null);
+    return typeof dl === "string" ? dl : "";
+  }
+
+  return "";
+}
+
+export async function fetchReportDownloadUrl({ submissionId } = {}) {
+  try {
+    const sid = (submissionId || "").trim();
+    if (!sid) return { ok: false, error: "Missing submissionId." };
+
+    const res = await wixData
+      .query(COLLECTION_ID)
+      .eq("submissionId", sid)
+      .limit(1)
+      .find({ suppressAuth: true });
+
+    const item = res.items?.[0];
+    if (!item) return { ok: false, error: "Submission not found." };
+
+    const reportUrl = (item.reportUrl || "").trim();
+    const reportPdfName =
+      (item.reportPdfName || "").trim() || `Policy-Explainer-Report-${sid}.pdf`;
+
+    if (!reportUrl) {
+      return { ok: false, error: "Report not ready yet. Try again in 1 minute." };
+    }
+
+    const downloadUrl = await toPublicDownloadUrl(reportUrl, reportPdfName);
+    if (!downloadUrl) {
+      return { ok: false, error: "Download link could not be generated. Refresh." };
+    }
+
+    return { ok: true, downloadUrl, reportPdfName };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+}
