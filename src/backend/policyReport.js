@@ -266,12 +266,12 @@ function extractInsuredAndAddress(blockLines) {
 
 function extractCoverageLimits(lines) {
   const coverageDefs = [
-    { name: "Coverage A – Dwelling", pattern: /^A\.\s*(DWELLING)/i, emoji: "🏡" },
-    { name: "Coverage B – Other Structures", pattern: /^B\.\s*(OTHER\s+STRUCTURES)/i, emoji: "🏠" },
-    { name: "Coverage C – Personal Property", pattern: /^C\.\s*(PERSONAL\s+PROPERTY)/i, emoji: "📦" },
-    { name: "Coverage D – Loss of Use", pattern: /^D\.\s*(LOSS\s+OF\s+USE)/i, emoji: "🏨" },
-    { name: "Coverage E – Personal Liability", pattern: /^E\.\s*(PERSONAL\s+LIABILITY)/i, emoji: "⚖️" },
-    { name: "Coverage F – Medical Payments", pattern: /^F\.\s*(MEDICAL\s+PAYMENTS)/i, emoji: "🩺" },
+    { name: "Coverage A – Dwelling", pattern: /^A\.\s*(DWELLING)/i, emoji: "🏡", appliesTo: "Your home and attached structures" },
+    { name: "Coverage B – Other Structures", pattern: /^B\.\s*(OTHER\s+STRUCTURES)/i, emoji: "🏠", appliesTo: "Detached structures (shed, fence, detached garage)" },
+    { name: "Coverage C – Personal Property", pattern: /^C\.\s*(PERSONAL\s+PROPERTY)/i, emoji: "📦", appliesTo: "Your belongings (furniture, clothing, electronics)" },
+    { name: "Coverage D – Loss of Use", pattern: /^D\.\s*(LOSS\s+OF\s+USE)/i, emoji: "🏨", appliesTo: "Additional living expenses if home is uninhabitable" },
+    { name: "Coverage E – Personal Liability", pattern: /^E\.\s*(PERSONAL\s+LIABILITY)/i, emoji: "⚖️", appliesTo: "Lawsuits for bodily injury or property damage you cause" },
+    { name: "Coverage F – Medical Payments", pattern: /^F\.\s*(MEDICAL\s+PAYMENTS)/i, emoji: "🩺", appliesTo: "Medical bills for guests injured on your property" },
   ];
 
   const coverages = [];
@@ -299,7 +299,7 @@ function extractCoverageLimits(lines) {
         if (limit !== NOT_FOUND) break;
       }
     }
-    coverages.push({ name: def.name, emoji: def.emoji, appliesTo: NOT_FOUND, limit, valuation: NOT_FOUND });
+    coverages.push({ name: def.name, emoji: def.emoji, appliesTo: def.appliesTo, limit, valuation: NOT_FOUND });
   }
   return coverages;
 }
@@ -350,6 +350,10 @@ function extractValuationFromChecklist(lines) {
 
 /**
  * Parse endorsements table from dec page.
+ * Handles lines like:
+ *   "FP HO LWD 03 23 LIMITED WATER DAMAGE COVERAGE $ 10,000 $ -2,091.67"
+ *   "LAW AND ORDINANCE 25% Included"
+ *   "SINKHOLE LOSS COVERAGE Excluded"
  */
 function extractEndorsementsFromDecPage(lines) {
   const endorsements = [];
@@ -362,20 +366,47 @@ function extractEndorsementsFromDecPage(lines) {
     if (!inSection) continue;
     if (/^form\s*#/i.test(line) || line.length < 10) continue;
 
+    // Step 1: Strip form number prefix (e.g., "FP HO LWD 03 23" or "FP 04 95 02 14")
     let description = line;
     const formMatch = line.match(/^(?:[A-Z]{2,3}\s+)+(?:[A-Z\d]+\s+)*\d{2}\s+\d{2}\s+/i);
     if (formMatch) description = line.substring(formMatch[0].length).trim();
 
-    const limit = moneyFrom(description) || percentFrom(description) || "";
+    // Step 2: Detect if excluded
+    const isExcluded = /\bexcluded\b/i.test(description);
+
+    // Step 3: Extract the coverage limit (first dollar amount that looks like a limit, not a premium)
+    // Limits are positive: $10,000, $5,000, $1,000
+    // Premiums are often negative or at end: $-2,091.67, $1,974.51
+    // Strategy: grab all dollar amounts, take the first one that doesn't start with -
+    const allMoney = description.match(/\$\s*-?[\d,]+(\.\d{2})?/g) || [];
+    let limit = "";
+    for (const m of allMoney) {
+      const normalized = m.replace(/\$\s+/, "$");
+      if (!normalized.startsWith("$-")) {
+        // Check if this looks like a round limit (no cents, or .00)
+        const val = parseFloat(normalized.replace(/[$,]/g, ""));
+        if (val >= 500 && (val % 1 === 0 || /\.00$/.test(normalized))) {
+          limit = normalized;
+          break;
+        }
+      }
+    }
+    // If no round limit found, try percentage
+    if (!limit) {
+      const pct = percentFrom(description);
+      if (pct) limit = pct;
+    }
+
+    // Step 4: Clean the name — remove ALL dollar amounts, percentages, and status words
     let cleanDesc = description
-      .replace(/\$\s*[\d,]+(\.\d{2})?/g, "")
-      .replace(/\-?\$\s*[\d,]+(\.\d{2})?/g, "")
-      .replace(/\b(Included|Excluded)\b/gi, "")
+      .replace(/\$\s*-?[\d,]+(\.\d{2})?/g, "")  // remove all dollar amounts
+      .replace(/\d+(\.\d+)?\s*%/g, "")            // remove percentages
+      .replace(/\b(Included|Excluded)\b/gi, "")   // remove status words
       .replace(/\s{2,}/g, " ")
       .trim();
+
     if (cleanDesc.length < 5) continue;
 
-    const isExcluded = /excluded/i.test(description);
     endorsements.push({
       name: cleanDesc,
       limitOrEffect: isExcluded ? "Excluded" : (limit || NOT_FOUND),
@@ -403,7 +434,12 @@ function deterministicExtract(fullText) {
   const endorsements = extractEndorsementsFromDecPage(lines);
 
   for (const c of coverages) {
-    if (valuationMap[c.name]) c.valuation = valuationMap[c.name];
+    if (valuationMap[c.name]) {
+      c.valuation = valuationMap[c.name];
+    } else if (/Coverage [DEF]/.test(c.name)) {
+      // ACV/RCV does not apply to Loss of Use, Liability, or Medical Payments
+      c.valuation = "N/A";
+    }
   }
 
   return {
@@ -544,12 +580,18 @@ STRICT RULES:
   "exclusions": [
     { "text": "...from policy text...", "example": "One sentence illustration." }
   ],
+  "endorsements": [
+    { "name": "...endorsement name...", "example": "One sentence illustration of what this endorsement means for the homeowner." }
+  ],
   "keyTakeaways": ["Fact-based bullet from the policy...", "..."]
 }
 
 IMPORTANT:
 - coveragesExplained MUST include A through F in order, using the HO-3 policy text.
 - keyTakeaways should be 4-6 fact-based bullets highlighting the most important things.
+- For endorsements: use the pre-extracted endorsement names below. For each one, write a short
+  plain-English example of what it means for the homeowner. Match by name.
+  Example: "LIMITED WATER DAMAGE COVERAGE" → "Water damage from plumbing leaks is capped at $10,000 per occurrence under this endorsement."
 
 Context:
 - State: ${state}
@@ -595,10 +637,19 @@ function mergeAiWithDeterministic(baseReportData, aiOutput) {
   // Merge AI examples into deterministic endorsements
   if (Array.isArray(aiOutput?.endorsements)) {
     for (const aiEnd of aiOutput.endorsements) {
-      const match = merged.endorsements.find(
-        (e) => e.name && aiEnd?.name && e.name.toLowerCase().includes(aiEnd.name.toLowerCase().slice(0, 15))
-      );
-      if (match && aiEnd.example) match.example = aiEnd.example;
+      if (!aiEnd?.name || !aiEnd?.example) continue;
+      const aiName = aiEnd.name.toLowerCase();
+      // Try to find a matching deterministic endorsement
+      const match = merged.endorsements.find((e) => {
+        if (!e.name) return false;
+        const eName = e.name.toLowerCase();
+        // Check if key words overlap (at least 2 significant words match)
+        const aiWords = aiName.split(/\s+/).filter(w => w.length > 3);
+        const eWords = eName.split(/\s+/).filter(w => w.length > 3);
+        const overlap = aiWords.filter(w => eWords.some(ew => ew.includes(w) || w.includes(ew)));
+        return overlap.length >= 2 || eName.includes(aiName.slice(0, 20)) || aiName.includes(eName.slice(0, 20));
+      });
+      if (match) match.example = aiEnd.example;
     }
   }
 
