@@ -15,7 +15,7 @@
 // 3. Added explicit "residence premises" address extraction
 // 4. Added deterministic Checklist of Coverage parser for ACV/RCV
 // 5. Added deterministic endorsement table parser from dec page 2
-// 6. Switched AI layer from OpenAI to Claude (claude-sonnet-4-20250514)
+// 6. Switched AI layer from OpenAI to Claude (claude-sonnet-4-6)
 // 7. Improved snippet windowing (larger context, smarter dedup)
 // 8. AI prompt hardened: deterministic fields are locked, AI cannot overwrite them
 
@@ -499,7 +499,7 @@ function collectSnippets(fullText, patterns = []) {
 // AI LAYER — CLAUDE API
 // ============================================================
 
-async function callClaudeJson({ system, user, model = "claude-sonnet-4-20250514", temperature = 0.2 }) {
+async function callClaudeJson({ system, user, model = "claude-sonnet-4-6", temperature = 0.2 }) {
   const apiKey = await getSecret("ANTHROPIC_API_KEY");
   if (!apiKey) throw new Error("Missing ANTHROPIC_API_KEY in Secrets Manager.");
 
