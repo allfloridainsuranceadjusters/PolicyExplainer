@@ -18,6 +18,7 @@
 // 6. Switched AI layer from OpenAI to Claude (claude-sonnet-4-6)
 // 7. Improved snippet windowing (larger context, smarter dedup)
 // 8. AI prompt hardened: deterministic fields are locked, AI cannot overwrite them
+// 9. Render warm-up ping at the start of each run so the PDF service is awake by the PDF step
 
 import { fetch } from "wix-fetch";
 import { mediaManager } from "wix-media-backend";
@@ -857,6 +858,24 @@ async function tryOcrDeclarationsText(pdfUrl) {
   }
 }
 
+// ============================================================
+// RENDER WARM-UP
+// ============================================================
+
+// Render's free plan puts the PDF service to sleep after ~15 minutes idle,
+// and the first request after that can take 30-60+ seconds to wake it.
+// We ping it at the start of each run (without waiting on it) so it is awake
+// by the time the PDF step runs, ~60 seconds later, after the AI step.
+function warmUpRenderer() {
+  try {
+    fetch(`${RENDER_BASE_URL}/`, { method: "get" })
+      .then((r) => console.log(`[${BUILD_TAG}] Renderer warm-up ping: HTTP ${r.status}`))
+      .catch((e) => console.log(`[${BUILD_TAG}] Renderer warm-up ping failed: ${e && e.message ? e.message : e}`));
+  } catch (_) {
+    // Never let the warm-up break the pipeline.
+  }
+}
+
 export async function generateReportDataFromPdfUrl({
   policyFileUrl = "",
   firstName = "",
@@ -864,6 +883,8 @@ export async function generateReportDataFromPdfUrl({
   state = "Florida",
 } = {}) {
   if (!policyFileUrl) throw new Error("Missing policyFileUrl.");
+
+  warmUpRenderer();
 
   console.log(`[${BUILD_TAG}] generateReportDataFromPdfUrl called for: ${policyFileName}`);
 
